@@ -31,12 +31,14 @@ pipeline {
             steps {
                 script {
 
+                    // Manual mode
                     if (params.SERVICE != "auto") {
                         env.SERVICE_TO_BUILD = params.SERVICE
                         echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
                         return
                     }
 
+                    // Auto detect from git changes
                     def changedFiles = sh(
                         script: "git diff --name-only HEAD~1 HEAD",
                         returnStdout: true
@@ -59,12 +61,12 @@ pipeline {
                         return
                     }
 
-                    echo "Auto detected service: ${env.SERVICE_TO_BUILD}"
+                    echo "Detected service: ${env.SERVICE_TO_BUILD}"
                 }
             }
         }
 
-        stage('Login to ECR') {
+        stage('Login to AWS ECR') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
             }
@@ -77,6 +79,28 @@ pipeline {
             }
         }
 
+        stage('Build & Push Version Image') {
+            when {
+                expression { env.SERVICE_TO_BUILD != null }
+            }
+            steps {
+                script {
+
+                    env.VERSION_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
+
+                    echo "Building VERSION image: ${env.VERSION_TAG}"
+
+                    dir("${env.SERVICE_TO_BUILD}") {
+
+                        sh """
+                        docker build --no-cache -t ${VERSION_TAG} .
+                        docker push ${VERSION_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
         stage('Build & Push Latest Image') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
@@ -84,29 +108,32 @@ pipeline {
             steps {
                 script {
 
-                    def LATEST_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
+                    env.LATEST_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
 
-                    echo "Building image: ${LATEST_TAG}"
+                    echo "Building LATEST image: ${env.LATEST_TAG}"
 
                     dir("${env.SERVICE_TO_BUILD}") {
 
-                        sh "docker build -t ${LATEST_TAG} ."
+                        sh """
+                        docker build --no-cache -t ${LATEST_TAG} .
+                        docker push ${LATEST_TAG}
+                        """
                     }
-
-                    sh "docker push ${LATEST_TAG}"
-
-                    echo "Successfully pushed: ${LATEST_TAG}"
                 }
             }
         }
+
     }
 
     post {
         success {
-            echo "Pipeline completed successfully"
+            echo "Build successful"
+            echo "Version image: ${VERSION_TAG}"
+            echo "Latest image: ${LATEST_TAG}"
         }
+
         failure {
-            echo "Pipeline failed"
+            echo "Build failed"
         }
     }
 }
