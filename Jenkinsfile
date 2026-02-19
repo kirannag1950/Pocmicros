@@ -31,14 +31,12 @@ pipeline {
             steps {
                 script {
 
-                    // Manual mode
                     if (params.SERVICE != "auto") {
                         env.SERVICE_TO_BUILD = params.SERVICE
                         echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
                         return
                     }
 
-                    // Auto detection mode
                     def changedFiles = sh(
                         script: "git diff --name-only HEAD~1 HEAD",
                         returnStdout: true
@@ -79,31 +77,25 @@ pipeline {
             }
         }
 
-        stage('Build & Push Image') {
+        stage('Build & Push Latest Image') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
             }
             steps {
                 script {
 
-                    def VERSION_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
-                    def LATEST_TAG  = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
+                    def LATEST_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
 
-                    echo "Building image: ${VERSION_TAG}"
+                    echo "Building image: ${LATEST_TAG}"
 
                     dir("${env.SERVICE_TO_BUILD}") {
 
-                        sh "docker build -t ${VERSION_TAG} ."
-
-                        sh "docker tag ${VERSION_TAG} ${LATEST_TAG}"
+                        sh "docker build -t ${LATEST_TAG} ."
                     }
 
-                    sh "docker push ${VERSION_TAG}"
                     sh "docker push ${LATEST_TAG}"
 
-                    echo "Successfully pushed:"
-                    echo "${VERSION_TAG}"
-                    echo "${LATEST_TAG}"
+                    echo "Successfully pushed: ${LATEST_TAG}"
                 }
             }
         }
