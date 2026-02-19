@@ -31,20 +31,41 @@ pipeline {
             steps {
                 script {
 
-                    // Manual mode
+                    // Manual override
                     if (params.SERVICE != "auto") {
                         env.SERVICE_TO_BUILD = params.SERVICE
                         echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
                         return
                     }
 
-                    // Auto detect from git changes
-                    def changedFiles = sh(
-                        script: "git diff --name-only HEAD~1 HEAD",
-                        returnStdout: true
-                    ).trim()
+                    echo "Auto-detecting changed service from Git changes..."
 
-                    echo "Changed files: ${changedFiles}"
+                    def changedFiles = ""
+
+                    // Use Jenkins changeSets (safe for webhook)
+                    for (changeLog in currentBuild.changeSets) {
+                        for (entry in changeLog.items) {
+                            for (file in entry.affectedFiles) {
+                                changedFiles += file.path + "\n"
+                            }
+                        }
+                    }
+
+                    changedFiles = changedFiles.trim()
+
+                    echo "Changed files:\n${changedFiles}"
+
+                    if (!changedFiles) {
+                        echo "No changes detected from Jenkins changeSets."
+                        echo "Fallback to git diff..."
+
+                        changedFiles = sh(
+                            script: "git diff --name-only origin/main HEAD || true",
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Fallback changed files:\n${changedFiles}"
+                    }
 
                     if (changedFiles.contains("auth-service")) {
                         env.SERVICE_TO_BUILD = "auth-service"
@@ -93,7 +114,7 @@ pipeline {
                     dir("${env.SERVICE_TO_BUILD}") {
 
                         sh """
-                        docker build --no-cache -t ${VERSION_TAG} .
+                        docker build -t ${VERSION_TAG} .
                         docker push ${VERSION_TAG}
                         """
                     }
@@ -115,7 +136,7 @@ pipeline {
                     dir("${env.SERVICE_TO_BUILD}") {
 
                         sh """
-                        docker build --no-cache -t ${LATEST_TAG} .
+                        docker build -t ${LATEST_TAG} .
                         docker push ${LATEST_TAG}
                         """
                     }
@@ -126,14 +147,20 @@ pipeline {
     }
 
     post {
+
         success {
             echo "Build successful"
-            echo "Version image: ${VERSION_TAG}"
-            echo "Latest image: ${LATEST_TAG}"
+            echo "Service built: ${env.SERVICE_TO_BUILD}"
+            echo "Version image: ${env.VERSION_TAG}"
+            echo "Latest image: ${env.LATEST_TAG}"
         }
 
         failure {
             echo "Build failed"
+        }
+
+        always {
+            cleanWs()
         }
     }
 }
