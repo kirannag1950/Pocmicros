@@ -28,45 +28,41 @@ pipeline {
         }
 
         stage('Detect Service') {
-    steps {
-        script {
+            steps {
+                script {
 
-            // Manual build takes priority
-            if (params.SERVICE != "auto") {
+                    if (params.SERVICE != "auto") {
+                        env.SERVICE_TO_BUILD = params.SERVICE
+                        echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
+                        return
+                    }
 
-                env.SERVICE_TO_BUILD = params.SERVICE
+                    def changedFiles = sh(
+                        script: "git diff --name-only HEAD~1 HEAD",
+                        returnStdout: true
+                    ).trim()
 
-                echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
-                return
+                    echo "Changed files: ${changedFiles}"
+
+                    if (changedFiles.contains("auth-service")) {
+                        env.SERVICE_TO_BUILD = "auth-service"
+                    }
+                    else if (changedFiles.contains("invoice-api")) {
+                        env.SERVICE_TO_BUILD = "invoice-api"
+                    }
+                    else if (changedFiles.contains("invoice-worker")) {
+                        env.SERVICE_TO_BUILD = "invoice-worker"
+                    }
+                    else {
+                        echo "No service change detected. Skipping build."
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+
+                    echo "Detected service: ${env.SERVICE_TO_BUILD}"
+                }
             }
-
-            // Automatic detection
-            def changedFiles = sh(
-                script: "git diff --name-only HEAD~1 HEAD",
-                returnStdout: true
-            ).trim()
-
-            echo "Changed files: ${changedFiles}"
-
-            if (changedFiles.contains("auth-service")) {
-                env.SERVICE_TO_BUILD = "auth-service"
-            }
-            else if (changedFiles.contains("invoice-api")) {
-                env.SERVICE_TO_BUILD = "invoice-api"
-            }
-            else if (changedFiles.contains("invoice-worker")) {
-                env.SERVICE_TO_BUILD = "invoice-worker"
-            }
-            else {
-                echo "No service change detected. Skipping build."
-                currentBuild.result = 'SUCCESS'
-                return
-            }
-
-            echo "Detected service: ${env.SERVICE_TO_BUILD}"
         }
-    }
-}
 
         stage('Login to ECR') {
             steps {
@@ -79,24 +75,26 @@ pipeline {
         }
 
         stage('Build Image') {
-    when {
-        expression { env.SERVICE_TO_BUILD != null }
-    }
-    steps {
-        script {
-
-            def IMAGE = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
-
-            dir("${env.SERVICE_TO_BUILD}") {
-                sh "docker build -t ${IMAGE} ."
+            when {
+                expression { env.SERVICE_TO_BUILD != null }
             }
+            steps {
+                script {
 
-            sh "docker push ${IMAGE}"
+                    def IMAGE = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
 
-            echo "Pushed image: ${IMAGE}"
+                    dir("${env.SERVICE_TO_BUILD}") {
+                        sh "docker build -t ${IMAGE} ."
+                    }
+
+                    sh "docker push ${IMAGE}"
+
+                    echo "Pushed image: ${IMAGE}"
+                }
+            }
         }
-    }
-}
+
+    }  // ← THIS WAS MISSING
 
     post {
         success {
