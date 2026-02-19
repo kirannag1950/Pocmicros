@@ -31,12 +31,14 @@ pipeline {
             steps {
                 script {
 
+                    // Manual mode
                     if (params.SERVICE != "auto") {
                         env.SERVICE_TO_BUILD = params.SERVICE
                         echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
                         return
                     }
 
+                    // Auto detection mode
                     def changedFiles = sh(
                         script: "git diff --name-only HEAD~1 HEAD",
                         returnStdout: true
@@ -54,17 +56,20 @@ pipeline {
                         env.SERVICE_TO_BUILD = "invoice-worker"
                     }
                     else {
-                        echo "No service change detected. Skipping build."
+                        echo "No service changes detected. Skipping build."
                         currentBuild.result = 'SUCCESS'
                         return
                     }
 
-                    echo "Detected service: ${env.SERVICE_TO_BUILD}"
+                    echo "Auto detected service: ${env.SERVICE_TO_BUILD}"
                 }
             }
         }
 
         stage('Login to ECR') {
+            when {
+                expression { env.SERVICE_TO_BUILD != null }
+            }
             steps {
                 sh '''
                 aws ecr get-login-password --region $AWS_REGION | \
@@ -74,34 +79,42 @@ pipeline {
             }
         }
 
-        stage('Build Image') {
+        stage('Build & Push Image') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
             }
             steps {
                 script {
 
-                    def IMAGE = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
+                    def VERSION_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
+                    def LATEST_TAG  = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
+
+                    echo "Building image: ${VERSION_TAG}"
 
                     dir("${env.SERVICE_TO_BUILD}") {
-                        sh "docker build -t ${IMAGE} ."
+
+                        sh "docker build -t ${VERSION_TAG} ."
+
+                        sh "docker tag ${VERSION_TAG} ${LATEST_TAG}"
                     }
 
-                    sh "docker push ${IMAGE}"
+                    sh "docker push ${VERSION_TAG}"
+                    sh "docker push ${LATEST_TAG}"
 
-                    echo "Pushed image: ${IMAGE}"
+                    echo "Successfully pushed:"
+                    echo "${VERSION_TAG}"
+                    echo "${LATEST_TAG}"
                 }
             }
         }
-
-    }  // ← THIS WAS MISSING
+    }
 
     post {
         success {
-            echo "Build completed successfully"
+            echo "Pipeline completed successfully"
         }
         failure {
-            echo "Build failed"
+            echo "Pipeline failed"
         }
     }
 }
