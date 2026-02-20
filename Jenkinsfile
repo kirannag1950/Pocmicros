@@ -13,13 +13,7 @@ pipeline {
         choice(
             name: 'SERVICE',
             choices: ['auto', 'auth-service', 'invoice-api', 'invoice-worker', 'all'],
-            description: '''
-auto = detect changed services automatically (webhook)
-auth-service = build only auth-service
-invoice-api = build only invoice-api
-invoice-worker = build only invoice-worker
-all = build all services
-'''
+            description: 'auto = webhook detect, or manually select service'
         )
     }
 
@@ -54,26 +48,25 @@ all = build all services
 
                     def services = []
 
-                    // Manual build mode
                     if (params.SERVICE == "all") {
-
-                        echo "Manual build selected: ALL services"
 
                         services = [
                             "auth-service",
                             "invoice-api",
                             "invoice-worker"
                         ]
+
+                        echo "Manual build ALL services"
                     }
                     else if (params.SERVICE != "auto") {
 
-                        echo "Manual build selected: ${params.SERVICE}"
-
                         services = [params.SERVICE]
+
+                        echo "Manual build ${params.SERVICE}"
                     }
                     else {
 
-                        echo "Webhook/Auto mode: detecting changed services..."
+                        echo "Webhook mode detecting changes..."
 
                         def changedFiles = sh(
                             script: '''
@@ -86,8 +79,7 @@ all = build all services
                             returnStdout: true
                         ).trim()
 
-                        echo "Changed files:"
-                        echo "${changedFiles}"
+                        echo "Changed files:\n${changedFiles}"
 
                         if (changedFiles.contains("auth-service")) {
                             services.add("auth-service")
@@ -104,7 +96,7 @@ all = build all services
 
                     if (services.isEmpty()) {
 
-                        echo "No services detected. Skipping build."
+                        echo "No services to build"
 
                         currentBuild.result = 'SUCCESS'
 
@@ -113,7 +105,7 @@ all = build all services
 
                     env.SERVICES_TO_BUILD = services.join(",")
 
-                    echo "Final services list: ${env.SERVICES_TO_BUILD}"
+                    echo "Services to build: ${env.SERVICES_TO_BUILD}"
                 }
             }
         }
@@ -125,8 +117,6 @@ all = build all services
             }
 
             steps {
-
-                echo "Logging into AWS ECR..."
 
                 sh '''
                 aws ecr get-login-password --region $AWS_REGION | \
@@ -152,67 +142,64 @@ all = build all services
 
                     for (svc in serviceList) {
 
-                        echo "========================================"
-                        echo "Processing service: ${svc}"
-                        echo "========================================"
+                        echo "Processing ${svc}"
 
                         def VERSION_TAG = "${ECR_REPO}:${svc}-${BUILD_NUMBER}"
+
                         def LATEST_TAG  = "${ECR_REPO}:${svc}-latest"
 
                         dir("${svc}") {
-
-                            echo "Building Docker image..."
 
                             sh """
                             docker build -t ${VERSION_TAG} .
                             """
 
-                            echo "Running Trivy scan..."
+                            script {
 
-                            sh """
-                            trivy image \
-                              --exit-code 1 \
-                              --severity CRITICAL,HIGH \
-                              --scanners vuln \
-                              --format json \
-                              -o ../${TRIVY_REPORT_DIR}/${svc}-trivy-report.json \
-                              ${VERSION_TAG}
-                            """
+                                def jsonReport = "../${TRIVY_REPORT_DIR}/${svc}-trivy-report.json"
+                                def txtReport  = "../${TRIVY_REPORT_DIR}/${svc}-trivy-report.txt"
 
-                            echo "Tagging latest image..."
+                                // Run JSON report scan
+                                def exitCode = sh(
+                                    script: """
+                                    trivy image \
+                                      --severity CRITICAL,HIGH \
+                                      --scanners vuln \
+                                      --format json \
+                                      -o ${jsonReport} \
+                                      ${VERSION_TAG}
+                                    """,
+                                    returnStatus: true
+                                )
+
+                                // Generate readable TXT report
+                                sh """
+                                trivy image \
+                                  --severity CRITICAL,HIGH \
+                                  --scanners vuln \
+                                  --format table \
+                                  -o ${txtReport} \
+                                  ${VERSION_TAG}
+                                """
+
+                                // Always archive reports
+                                archiveArtifacts artifacts: "${TRIVY_REPORT_DIR}/*", fingerprint: true
+
+                                // Fail build AFTER archiving
+                                if (exitCode != 0) {
+
+                                    error("CRITICAL or HIGH vulnerabilities found in ${svc}. Download report from Jenkins artifacts.")
+                                }
+                            }
 
                             sh """
                             docker tag ${VERSION_TAG} ${LATEST_TAG}
-                            """
-
-                            echo "Pushing version image..."
-
-                            sh """
                             docker push ${VERSION_TAG}
-                            """
-
-                            echo "Pushing latest image..."
-
-                            sh """
                             docker push ${LATEST_TAG}
                             """
                         }
                     }
                 }
-            }
-        }
-
-        stage('Archive Trivy Reports') {
-
-            when {
-                expression { env.SERVICES_TO_BUILD != null }
-            }
-
-            steps {
-
-                echo "Archiving Trivy reports..."
-
-                archiveArtifacts artifacts: "${TRIVY_REPORT_DIR}/*.json", fingerprint: true
             }
         }
     }
@@ -221,19 +208,14 @@ all = build all services
 
         success {
 
-            echo "========================================"
-            echo "BUILD SUCCESS"
+            echo "Build SUCCESS"
             echo "Services built: ${env.SERVICES_TO_BUILD}"
-            echo "Images pushed to ECR successfully"
-            echo "========================================"
         }
 
         failure {
 
-            echo "========================================"
-            echo "BUILD FAILED"
-            echo "Reason: CRITICAL or HIGH vulnerability OR build error"
-            echo "========================================"
+            echo "Build FAILED"
+            echo "Download Trivy report from Jenkins → Build → Artifacts"
         }
 
         always {
