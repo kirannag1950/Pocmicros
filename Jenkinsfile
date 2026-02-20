@@ -159,7 +159,7 @@ pipeline {
                                 def jsonReport = "../${TRIVY_REPORT_DIR}/${svc}-trivy-report.json"
                                 def txtReport  = "../${TRIVY_REPORT_DIR}/${svc}-trivy-report.txt"
 
-                                // Run JSON report scan
+                                // JSON scan
                                 def exitCode = sh(
                                     script: """
                                     trivy image \
@@ -172,7 +172,7 @@ pipeline {
                                     returnStatus: true
                                 )
 
-                                // Generate readable TXT report
+                                // Table scan
                                 sh """
                                 trivy image \
                                   --severity CRITICAL,HIGH \
@@ -182,10 +182,10 @@ pipeline {
                                   ${VERSION_TAG}
                                 """
 
-                                // Always archive reports
-                                archiveArtifacts artifacts: "${TRIVY_REPORT_DIR}/*", fingerprint: true
+                                // ✅ FIXED PATH HERE
+                                archiveArtifacts artifacts: "../${TRIVY_REPORT_DIR}/*", fingerprint: true
 
-                                // Fail build AFTER archiving
+                                // Fail after archive
                                 if (exitCode != 0) {
 
                                     error("CRITICAL or HIGH vulnerabilities found in ${svc}. Download report from Jenkins artifacts.")
