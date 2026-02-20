@@ -38,7 +38,7 @@ pipeline {
 
             steps {
 
-                // Checkout source code from GitHub repository configured in Jenkins
+                // Checkout source code from GitHub repository configured in Jenkins from branch
                 checkout scm
             }
         }
