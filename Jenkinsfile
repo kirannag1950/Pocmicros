@@ -3,9 +3,24 @@ pipeline {
     agent any
 
     options {
-        timestamps()                 // show timestamps in logs
-        ansiColor('xterm')          // enable colored console output
-        disableConcurrentBuilds()   // prevent parallel job conflicts
+        timestamps()
+        ansiColor('xterm')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+
+        choice(
+            name: 'SERVICE',
+            choices: ['auto', 'auth-service', 'invoice-api', 'invoice-worker', 'all'],
+            description: '''
+auto = detect changed services automatically (webhook)
+auth-service = build only auth-service
+invoice-api = build only invoice-api
+invoice-worker = build only invoice-worker
+all = build all services
+'''
+        )
     }
 
     environment {
@@ -31,44 +46,65 @@ pipeline {
             }
         }
 
-        stage('Detect Changed Services (Branch Safe)') {
+        stage('Detect Services to Build') {
 
             steps {
 
                 script {
 
-                    echo "Detecting changed files from last commit..."
-
-                    def changedFiles = sh(
-                        script: '''
-                        if [ -n "$GIT_PREVIOUS_SUCCESSFUL_COMMIT" ]; then
-                            git diff --name-only $GIT_PREVIOUS_SUCCESSFUL_COMMIT $GIT_COMMIT
-                        else
-                            git diff --name-only HEAD~1 HEAD || true
-                        fi
-                        ''',
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Changed files:\n${changedFiles}"
-
                     def services = []
 
-                    if (changedFiles.contains("auth-service")) {
-                        services.add("auth-service")
-                    }
+                    // Manual build mode
+                    if (params.SERVICE == "all") {
 
-                    if (changedFiles.contains("invoice-api")) {
-                        services.add("invoice-api")
-                    }
+                        echo "Manual build selected: ALL services"
 
-                    if (changedFiles.contains("invoice-worker")) {
-                        services.add("invoice-worker")
+                        services = [
+                            "auth-service",
+                            "invoice-api",
+                            "invoice-worker"
+                        ]
+                    }
+                    else if (params.SERVICE != "auto") {
+
+                        echo "Manual build selected: ${params.SERVICE}"
+
+                        services = [params.SERVICE]
+                    }
+                    else {
+
+                        echo "Webhook/Auto mode: detecting changed services..."
+
+                        def changedFiles = sh(
+                            script: '''
+                            if [ -n "$GIT_PREVIOUS_SUCCESSFUL_COMMIT" ]; then
+                                git diff --name-only $GIT_PREVIOUS_SUCCESSFUL_COMMIT $GIT_COMMIT
+                            else
+                                git diff --name-only HEAD~1 HEAD || true
+                            fi
+                            ''',
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Changed files:"
+                        echo "${changedFiles}"
+
+                        if (changedFiles.contains("auth-service")) {
+                            services.add("auth-service")
+                        }
+
+                        if (changedFiles.contains("invoice-api")) {
+                            services.add("invoice-api")
+                        }
+
+                        if (changedFiles.contains("invoice-worker")) {
+                            services.add("invoice-worker")
+                        }
                     }
 
                     if (services.isEmpty()) {
 
-                        echo "No service changes detected. Skipping build."
+                        echo "No services detected. Skipping build."
 
                         currentBuild.result = 'SUCCESS'
 
@@ -77,7 +113,7 @@ pipeline {
 
                     env.SERVICES_TO_BUILD = services.join(",")
 
-                    echo "Services detected: ${env.SERVICES_TO_BUILD}"
+                    echo "Final services list: ${env.SERVICES_TO_BUILD}"
                 }
             }
         }
@@ -100,7 +136,7 @@ pipeline {
             }
         }
 
-        stage('Build, Scan & Push Services') {
+        stage('Build, Scan and Push') {
 
             when {
                 expression { env.SERVICES_TO_BUILD != null }
@@ -116,17 +152,16 @@ pipeline {
 
                     for (svc in serviceList) {
 
-                        echo "======================================"
+                        echo "========================================"
                         echo "Processing service: ${svc}"
-                        echo "======================================"
+                        echo "========================================"
 
                         def VERSION_TAG = "${ECR_REPO}:${svc}-${BUILD_NUMBER}"
-
                         def LATEST_TAG  = "${ECR_REPO}:${svc}-latest"
 
-                        echo "Building image: ${VERSION_TAG}"
-
                         dir("${svc}") {
+
+                            echo "Building Docker image..."
 
                             sh """
                             docker build -t ${VERSION_TAG} .
@@ -186,20 +221,19 @@ pipeline {
 
         success {
 
-            echo "======================================"
-            echo "Build SUCCESS"
+            echo "========================================"
+            echo "BUILD SUCCESS"
             echo "Services built: ${env.SERVICES_TO_BUILD}"
-            echo "Images pushed to ECR"
-            echo "======================================"
+            echo "Images pushed to ECR successfully"
+            echo "========================================"
         }
 
         failure {
 
-            echo "======================================"
-            echo "Build FAILED"
+            echo "========================================"
+            echo "BUILD FAILED"
             echo "Reason: CRITICAL or HIGH vulnerability OR build error"
-            echo "Check Trivy reports"
-            echo "======================================"
+            echo "========================================"
         }
 
         always {
