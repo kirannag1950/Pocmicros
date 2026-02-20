@@ -31,18 +31,16 @@ pipeline {
             steps {
                 script {
 
-                    // Manual override
                     if (params.SERVICE != "auto") {
                         env.SERVICE_TO_BUILD = params.SERVICE
                         echo "Manual build selected: ${env.SERVICE_TO_BUILD}"
                         return
                     }
 
-                    echo "Auto-detecting changed service from Git changes..."
+                    echo "Auto-detecting changed service..."
 
                     def changedFiles = ""
 
-                    // Use Jenkins changeSets (safe for webhook)
                     for (changeLog in currentBuild.changeSets) {
                         for (entry in changeLog.items) {
                             for (file in entry.affectedFiles) {
@@ -53,18 +51,11 @@ pipeline {
 
                     changedFiles = changedFiles.trim()
 
-                    echo "Changed files:\n${changedFiles}"
-
                     if (!changedFiles) {
-                        echo "No changes detected from Jenkins changeSets."
-                        echo "Fallback to git diff..."
-
                         changedFiles = sh(
                             script: "git diff --name-only origin/main HEAD || true",
                             returnStdout: true
                         ).trim()
-
-                        echo "Fallback changed files:\n${changedFiles}"
                     }
 
                     if (changedFiles.contains("auth-service")) {
@@ -77,7 +68,7 @@ pipeline {
                         env.SERVICE_TO_BUILD = "invoice-worker"
                     }
                     else {
-                        echo "No service changes detected. Skipping build."
+                        echo "No service changes detected. Exiting pipeline."
                         currentBuild.result = 'SUCCESS'
                         return
                     }
@@ -100,7 +91,7 @@ pipeline {
             }
         }
 
-        stage('Build & Push Version Image') {
+        stage('Build Docker Image') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
             }
@@ -108,39 +99,61 @@ pipeline {
                 script {
 
                     env.VERSION_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-${env.BUILD_NUMBER}"
+                    env.LATEST_TAG  = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
 
-                    echo "Building VERSION image: ${env.VERSION_TAG}"
+                    echo "Building image: ${VERSION_TAG}"
 
                     dir("${env.SERVICE_TO_BUILD}") {
 
                         sh """
                         docker build -t ${VERSION_TAG} .
-                        docker push ${VERSION_TAG}
                         """
                     }
                 }
             }
         }
 
-        stage('Build & Push Latest Image') {
+        stage('Trivy Security Scan') {
             when {
                 expression { env.SERVICE_TO_BUILD != null }
             }
             steps {
                 script {
 
-                    env.LATEST_TAG = "${ECR_REPO}:${env.SERVICE_TO_BUILD}-latest"
+                    echo "Running Trivy scan on ${VERSION_TAG}"
 
-                    echo "Building LATEST image: ${env.LATEST_TAG}"
-
-                    dir("${env.SERVICE_TO_BUILD}") {
-
-                        sh """
-                        docker build -t ${LATEST_TAG} .
-                        docker push ${LATEST_TAG}
-                        """
-                    }
+                    sh """
+                    trivy image \
+                    --exit-code 1 \
+                    --severity CRITICAL,HIGH \
+                    ${VERSION_TAG}
+                    """
                 }
+            }
+        }
+
+        stage('Tag Latest Image') {
+            when {
+                expression { env.SERVICE_TO_BUILD != null }
+            }
+            steps {
+
+                sh """
+                docker tag ${VERSION_TAG} ${LATEST_TAG}
+                """
+            }
+        }
+
+        stage('Push Images to ECR') {
+            when {
+                expression { env.SERVICE_TO_BUILD != null }
+            }
+            steps {
+
+                sh """
+                docker push ${VERSION_TAG}
+                docker push ${LATEST_TAG}
+                """
             }
         }
 
@@ -149,17 +162,20 @@ pipeline {
     post {
 
         success {
-            echo "Build successful"
-            echo "Service built: ${env.SERVICE_TO_BUILD}"
+
+            echo "Build and scan successful"
+            echo "Service: ${env.SERVICE_TO_BUILD}"
             echo "Version image: ${env.VERSION_TAG}"
             echo "Latest image: ${env.LATEST_TAG}"
         }
 
         failure {
-            echo "Build failed"
+
+            echo "Build failed due to security vulnerabilities or build error"
         }
 
         always {
+
             cleanWs()
         }
     }
